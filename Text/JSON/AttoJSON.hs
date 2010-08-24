@@ -11,8 +11,9 @@ import Data.Attoparsec ( maybeResult, parse, string, try, Parser, endOfInput
                        , parseWith, eitherResult, inClass, many, count, sepBy
                        , satisfy, option 
                        )
+import Data.Traversable (mapM)
 import Data.Attoparsec.Char8 (char8, decimal, skipSpace, signed)
-import Prelude hiding (concatMap, reverse, replicate, take, Show(..), concat)
+import Prelude hiding (concatMap, reverse, replicate, take, Show(..), concat, mapM)
 import qualified Prelude as P (Show, reverse, map)
 import Data.Foldable (foldrM)
 import Data.Bits (shiftR, (.&.))
@@ -21,7 +22,7 @@ import Data.Word (Word8)
 import Text.Show.ByteString (show)
 import Data.Ratio (denominator, numerator)
 import Numeric (readHex)
-import Data.Map (Map, fromList, elems, mapWithKey)
+import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys)
 import qualified Data.Map as M (lookup)
 
 fromLazy = pack . L.unpack
@@ -75,6 +76,41 @@ instance JSON String where
     fromJSON (JSString a) = Just $ w8sToStr $ unpack a
     fromJSON _            = Nothing
     toJSON str            = JSString $ pack $ strToW8s str
+
+instance JSON Bool where
+    fromJSON (JSBool bl) = Just bl
+    fromJSON _           = Nothing
+    toJSON bool          = JSBool bool
+
+instance JSON () where
+    fromJSON JSNull       = Just ()
+    fromJSON _            = Nothing
+    toJSON ()             = JSNull
+
+instance JSON a => JSON [a] where
+    fromJSON (JSArray xs) = mapM fromJSON xs
+    fromJSON _            = Nothing
+    toJSON                = JSArray . map toJSON
+
+instance JSON a => JSON [(String, a)] where
+    fromJSON (JSObject d) = mapM (\(k, v)-> (,) (w8sToStr $ unpack $ k) <$> fromJSON v) $ toList d
+    fromJSON  _           = Nothing
+    toJSON dic            = JSObject $ fromList $ P.map (\(k,v) -> (pack $ strToW8s k, toJSON v)) dic
+
+instance JSON a => JSON [(ByteString, a)] where
+    fromJSON (JSObject d) = mapM (\(k, v) -> (,) k <$> fromJSON v) $ toList d
+    fromJSON _            = Nothing
+    toJSON dic            = JSObject $ fromList $ P.map (\(k, v) -> (k, toJSON v)) dic
+
+instance JSON a => JSON (Map String a) where
+    fromJSON (JSObject d) = mapM fromJSON $ mapKeys (w8sToStr . unpack) d
+    fromJSON _            = Nothing
+    toJSON                = JSObject . fmap toJSON . mapKeys (pack . strToW8s)
+
+instance JSON a => JSON (Map ByteString a) where
+    fromJSON (JSObject d) = mapM fromJSON d
+    fromJSON _            = Nothing
+    toJSON                = JSObject . fmap toJSON
 
 lexeme p = skipSpace *> p
 symbol s = lexeme $ string s 
