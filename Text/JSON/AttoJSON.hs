@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, UndecidableInstances, TypeSynonymInstances #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, UndecidableInstances, TypeSynonymInstances, OverlappingInstances #-}
 {-# OPTIONS_GHC -fwarn-unused-imports #-}
 module Text.JSON.AttoJSON (JSValue (..), getField, getFields, JSON(..), parseJSON, readJSON, showJSON) where
 import Control.Applicative hiding (many)
