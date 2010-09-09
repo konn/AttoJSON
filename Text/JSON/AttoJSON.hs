@@ -1,6 +1,15 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, UndecidableInstances, TypeSynonymInstances, OverlappingInstances #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, UndecidableInstances #-}
+{-# LANGUAGE DeriveDataTypeable, TypeSynonymInstances, OverlappingInstances #-}
 {-# OPTIONS_GHC -fwarn-unused-imports #-}
-module Text.JSON.AttoJSON (JSValue (..), getField, getFields, updateField, JSON(..), parseJSON, readJSON, showJSON) where
+module Text.JSON.AttoJSON (
+    -- * Class and Data-Types for JSON Value
+    JSValue (..), JSON(..),
+    -- * Parsing & Printing
+    parseJSON, readJSON, showJSON,
+    -- * Manipulating Objects
+    getField, getFields, updateField
+  ) where
+
 import Control.Applicative hiding (many)
 import qualified Data.ByteString.Lazy as L (unpack)
 import Control.Monad.Identity (runIdentity)
@@ -24,29 +33,43 @@ import Data.Ratio (denominator, numerator)
 import Numeric (readHex)
 import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
+import Data.Generics (Data(..), Typeable(..))
+
 
 fromLazy = pack . L.unpack
 
-data JSValue = JSString {fromJSString :: !ByteString}
-             | JSNumber Rational
-             | JSObject (Map ByteString JSValue)
-             | JSArray [JSValue]
-             | JSBool !Bool
-             | JSNull deriving (P.Show, Eq)
+-- |Data types for JSON value.
+data JSValue = JSString {fromJSString :: !ByteString} -- ^ JSON String
+             | JSNumber Rational                      -- ^ JSON Number
+             | JSObject (Map ByteString JSValue)      -- ^ JSON Object
+             | JSArray [JSValue]                      -- ^ JSON Array
+             | JSBool !Bool                           -- ^ JSON Bool
+             | JSNull                                 -- ^ JSON Null
+               deriving (P.Show, Eq, Data, Typeable)
 
+-- |Get the value for field in Object and decode it.
 getField :: JSON a => ByteString -> JSValue -> Maybe a
 getField key (JSObject dic) = M.lookup key dic >>= fromJSON
 getField _ _                = Nothing
 
+-- |Same as 'getField' but it can process nested Object. ex:
+-- 
+-- @
+--   getFeilds [\"user\", \"name\"] (JSObject [(\"user\", JSObject [(\"name\", JSString \"hoge\")])]) == Just \"hoge\"
+-- @
 getFields :: JSON a => [ByteString] -> JSValue -> Maybe a
 getFields keys jso = fromJSON =<< foldrM getField jso (P.reverse keys)
 
+-- | Update or Insert the value for field in Object.
 updateField :: JSON a => ByteString -> a -> JSValue -> JSValue
-updateField key v (JSObject jso) = JSObject $ insert key (toJSON v)
+updateField key v (JSObject jso) = JSObject $ insert key (toJSON v) jso
 updateField _ _ j                = j
 
+-- |Type Class for the value that can be converted from/into 'JSValue'.
 class JSON a where
+    -- |Decode from JSValue
     fromJSON :: JSValue -> Maybe a
+    -- |Encode into JSValue
     toJSON   :: a -> JSValue
 
 instance JSON JSValue where
@@ -122,10 +145,43 @@ symbol s = lexeme $ string s
 value :: Parser JSValue
 value = jsString <|> number <|> object <|> array <|> try bool <|> try jsNull
 
+-- |Parse JSON source. Returns 'JSValue' ('Right') if succeed, Returns 'Left' if faild.
 parseJSON :: ByteString -> Either String JSValue
 parseJSON = eitherResult . runIdentity . parseWith (return "") (value <* skipSpace <* endOfInput)
+
+-- |Maybe version of 'parseJSON'.
 readJSON :: ByteString -> Maybe JSValue
 readJSON = maybeResult . runIdentity . parseWith (return "") (value <* skipSpace <* endOfInput)
+
+-- |Print 'JSValue' as JSON source (not pretty).
+showJSON :: JSValue -> ByteString
+showJSON (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
+  where
+    mems = elems $ mapWithKey (\k v -> showJSString k `append` ":" `append` showJSON v) dic
+showJSON (JSString jss)     = showJSString jss
+showJSON (JSNumber jsn) | denominator jsn == 1 = fromLazy $ show $ numerator jsn
+                        | otherwise            = fromLazy $ show (fromRational jsn :: Double)
+showJSON (JSArray jss)      = "[" `append` intercalate ", " (P.map showJSON jss) `append` "]"
+showJSON (JSNull)           = "null"
+showJSON (JSBool True)      = "true"
+showJSON (JSBool False)     = "false"
+
+showJSString :: ByteString -> ByteString
+showJSString js = "\"" `append` escape js `append` "\""
+  where
+    escape :: ByteString -> ByteString
+    escapeCh :: Char -> ByteString
+    escape = concat . P.map escapeCh . decode . unpack
+    escapeCh '\\' = "\\\\"
+    escapeCh '"'  = "\\\""
+    escapeCh '\b' = "\\b"
+    escapeCh '\f' = "\\f"
+    escapeCh '/'  = "\\/"
+    escapeCh '\n' = "\\n"
+    escapeCh '\r' = "\\r"
+    escapeCh '\t' = "\\t"
+    escapeCh ch | mustEscape ch    = escapeHex $ fromEnum ch
+                | otherwise        = singleton $ chToW8 ch
 
 jsNull = lexeme (JSNull <$ symbol "null")
 bool   = lexeme $
@@ -191,35 +247,6 @@ object = lexeme ( symbol "{" *> (JSObject . fromList <$> (objMember `sepBy` symb
 
 objMember :: Parser (ByteString, JSValue)
 objMember = lexeme ((,) <$> (fromJSString <$> jsString) <*> (symbol ":" *> value))
-
-showJSON :: JSValue -> ByteString
-showJSON (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
-  where
-    mems = elems $ mapWithKey (\k v -> showJSString k `append` ":" `append` showJSON v) dic
-showJSON (JSString jss)     = showJSString jss
-showJSON (JSNumber jsn) | denominator jsn == 1 = fromLazy $ show $ numerator jsn
-                        | otherwise            = fromLazy $ show (fromRational jsn :: Double)
-showJSON (JSArray jss)      = "[" `append` intercalate ", " (P.map showJSON jss) `append` "]"
-showJSON (JSNull)           = "null"
-showJSON (JSBool True)      = "true"
-showJSON (JSBool False)     = "false"
-
-showJSString :: ByteString -> ByteString
-showJSString js = "\"" `append` escape js `append` "\""
-  where
-    escape :: ByteString -> ByteString
-    escapeCh :: Char -> ByteString
-    escape = concat . P.map escapeCh . decode . unpack
-    escapeCh '\\' = "\\\\"
-    escapeCh '"'  = "\\\""
-    escapeCh '\b' = "\\b"
-    escapeCh '\f' = "\\f"
-    escapeCh '/'  = "\\/"
-    escapeCh '\n' = "\\n"
-    escapeCh '\r' = "\\r"
-    escapeCh '\t' = "\\t"
-    escapeCh ch | mustEscape ch    = escapeHex $ fromEnum ch
-                | otherwise        = singleton $ chToW8 ch
 
 unfoldrStep :: (a -> Bool) -> (a -> Word8) -> (a -> a) -> a -> Maybe (Word8, a)
 unfoldrStep p f g a | p a       = Nothing
