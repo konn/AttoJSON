@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, UndecidableInstances, TypeSynonymInstances, OverlappingInstances #-}
 {-# OPTIONS_GHC -fwarn-unused-imports #-}
-module Text.JSON.AttoJSON (JSValue (..), getField, getFields, JSON(..), parseJSON, readJSON, showJSON) where
+module Text.JSON.AttoJSON (JSValue (..), getField, getFields, updateField, JSON(..), parseJSON, readJSON, showJSON) where
 import Control.Applicative hiding (many)
 import qualified Data.ByteString.Lazy as L (unpack)
 import Control.Monad.Identity (runIdentity)
@@ -22,7 +22,7 @@ import Data.Word (Word8)
 import Text.Show.ByteString (show)
 import Data.Ratio (denominator, numerator)
 import Numeric (readHex)
-import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys)
+import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
 
 fromLazy = pack . L.unpack
@@ -40,6 +40,10 @@ getField _ _                = Nothing
 
 getFields :: JSON a => [ByteString] -> JSValue -> Maybe a
 getFields keys jso = fromJSON =<< foldrM getField jso (P.reverse keys)
+
+updateField :: JSON a => ByteString -> a -> JSValue -> JSValue
+updateField key v (JSObject jso) = JSObject $ insert key (toJSON v)
+updateField _ _ j                = j
 
 class JSON a where
     fromJSON :: JSValue -> Maybe a
