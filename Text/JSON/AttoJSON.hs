@@ -11,32 +11,31 @@ module Text.JSON.AttoJSON (
   ) where
 
 import Control.Applicative hiding (many)
-import qualified Data.ByteString.Lazy as L (unpack)
-import Control.Monad.Identity (runIdentity)
-import Data.ByteString ( append, ByteString, replicate, unfoldr, take, reverse
-                       , singleton, pack, intercalate, concat, unpack
+import qualified Data.ByteString.Lazy.Char8 as L (toChunks)
+import Data.ByteString.Char8 
+                       ( append, ByteString, unfoldr, take, reverse
+                       , singleton, intercalate, concat
                        )
-import Data.Attoparsec ( maybeResult, parse, string, try, Parser, endOfInput
-                       , parseWith, eitherResult, inClass, many, count, sepBy
-                       , satisfy, option 
-                       )
+import Data.Attoparsec ( Parser, maybeResult, eitherResult)
 import Data.Traversable (mapM)
-import Data.Attoparsec.Char8 (char8, decimal, skipSpace, signed)
+import Data.Attoparsec.Char8 ( char8, parse, string, decimal, skipSpace, satisfy
+                             , inClass, sepBy, option, many, endOfInput, try, feed
+                             )
 import Prelude hiding (concatMap, reverse, replicate, take, Show(..), concat, mapM)
 import qualified Prelude as P (Show, reverse, map)
 import Data.Foldable (foldrM)
 import Data.Bits (shiftR, (.&.))
-import Codec.Binary.UTF8.String (encode, decode)
-import Data.Word (Word8)
+import Control.Arrow (second, (***))
+import Data.ByteString.UTF8 (fromString, toString)
 import Text.Show.ByteString (show)
 import Data.Ratio (denominator, numerator)
 import Numeric (readHex)
 import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
 import Data.Generics (Data(..), Typeable(..))
+import Control.Monad (replicateM)
 
-
-fromLazy = pack . L.unpack
+fromLazy = concat . L.toChunks
 
 -- |Data types for JSON value.
 data JSValue = JSString {fromJSString :: !ByteString} -- ^ JSON String
@@ -76,16 +75,20 @@ instance JSON JSValue where
     fromJSON = return
     toJSON   = id
 
+instance JSON Rational where
+    fromJSON (JSNumber r) = Just r
+    fromJSON _            = Nothing
+    toJSON                = JSNumber
+
 instance JSON Int where
     fromJSON (JSNumber a) = fromInteger <$> fromJSON (JSNumber a)
-    fromJSON (JSString a) = maybeResult $ parse (signed decimal) a
+    fromJSON (JSString a) = Nothing
     fromJSON _            = Nothing
     toJSON a              = JSNumber (fromIntegral a)
 
 instance JSON Integer where
     fromJSON (JSNumber a) | denominator a == 1 = Just $ numerator a
                           | otherwise          = Nothing
-    fromJSON (JSString a) = maybeResult $ parse (signed decimal) a
     fromJSON _            = Nothing
     toJSON a              = JSNumber (fromIntegral a)
 
@@ -97,17 +100,17 @@ instance JSON Double where
 instance JSON ByteString where
     fromJSON (JSString a) = Just a
     fromJSON _            = Nothing
-    toJSON str            = JSString str
+    toJSON                = JSString
 
 instance JSON String where
-    fromJSON (JSString a) = Just $ w8sToStr $ unpack a
+    fromJSON (JSString a) = Just $ toString a
     fromJSON _            = Nothing
-    toJSON str            = JSString $ pack $ strToW8s str
+    toJSON str            = JSString $ fromString str
 
 instance JSON Bool where
     fromJSON (JSBool bl) = Just bl
     fromJSON _           = Nothing
-    toJSON bool          = JSBool bool
+    toJSON               = JSBool
 
 instance JSON () where
     fromJSON JSNull       = Just ()
@@ -120,24 +123,30 @@ instance JSON a => JSON [a] where
     toJSON                = JSArray . map toJSON
 
 instance JSON a => JSON [(String, a)] where
-    fromJSON (JSObject d) = mapM (\(k, v)-> (,) (w8sToStr $ unpack $ k) <$> fromJSON v) $ toList d
+    fromJSON (JSObject d) = mapM (\(k, v)-> (,) (toString k) <$> fromJSON v) $ toList d
     fromJSON  _           = Nothing
-    toJSON dic            = JSObject $ fromList $ P.map (\(k,v) -> (pack $ strToW8s k, toJSON v)) dic
+    toJSON dic            = JSObject $ fromList $ P.map (fromString *** toJSON) dic
 
 instance JSON a => JSON [(ByteString, a)] where
     fromJSON (JSObject d) = mapM (\(k, v) -> (,) k <$> fromJSON v) $ toList d
     fromJSON _            = Nothing
-    toJSON dic            = JSObject $ fromList $ P.map (\(k, v) -> (k, toJSON v)) dic
+    toJSON dic            = JSObject $ fromList $ P.map (second toJSON) dic
 
 instance JSON a => JSON (Map String a) where
-    fromJSON (JSObject d) = mapM fromJSON $ mapKeys (w8sToStr . unpack) d
+    fromJSON (JSObject d) = mapM fromJSON $ mapKeys toString d
     fromJSON _            = Nothing
-    toJSON                = JSObject . fmap toJSON . mapKeys (pack . strToW8s)
+    toJSON                = JSObject . fmap toJSON . mapKeys fromString
 
 instance JSON a => JSON (Map ByteString a) where
     fromJSON (JSObject d) = mapM fromJSON d
     fromJSON _            = Nothing
     toJSON                = JSObject . fmap toJSON
+
+instance JSON a => JSON (Maybe a) where
+    fromJSON JSNull = Just Nothing
+    fromJSON jso    = fromJSON jso
+    toJSON (Just a) = toJSON a
+    toJSON Nothing  = JSNull
 
 lexeme p = skipSpace *> p
 symbol s = lexeme $ string s 
@@ -147,11 +156,11 @@ value = jsString <|> number <|> object <|> array <|> try bool <|> try jsNull
 
 -- |Parse JSON source. Returns 'JSValue' ('Right') if succeed, Returns 'Left' if faild.
 parseJSON :: ByteString -> Either String JSValue
-parseJSON = eitherResult . runIdentity . parseWith (return "") (value <* skipSpace <* endOfInput)
+parseJSON = eitherResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 
 -- |Maybe version of 'parseJSON'.
 readJSON :: ByteString -> Maybe JSValue
-readJSON = maybeResult . runIdentity . parseWith (return "") (value <* skipSpace <* endOfInput)
+readJSON = maybeResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 
 -- |Print 'JSValue' as JSON source (not pretty).
 showJSON :: JSValue -> ByteString
@@ -170,8 +179,9 @@ showJSString :: ByteString -> ByteString
 showJSString js = "\"" `append` escape js `append` "\""
   where
     escape :: ByteString -> ByteString
+    escape = concat . P.map escapeCh . toString
+
     escapeCh :: Char -> ByteString
-    escape = concat . P.map escapeCh . decode . unpack
     escapeCh '\\' = "\\\\"
     escapeCh '"'  = "\\\""
     escapeCh '\b' = "\\b"
@@ -180,15 +190,15 @@ showJSString js = "\"" `append` escape js `append` "\""
     escapeCh '\n' = "\\n"
     escapeCh '\r' = "\\r"
     escapeCh '\t' = "\\t"
-    escapeCh ch | mustEscape ch    = escapeHex $ fromEnum ch
-                | otherwise        = singleton $ chToW8 ch
+    escapeCh ch | mustEscape ch = escapeHex $ fromEnum ch
+                | otherwise     = singleton ch
 
 jsNull = lexeme (JSNull <$ symbol "null")
 bool   = lexeme $
            JSBool True  <$ symbol "true"
        <|> JSBool False <$ symbol "false"
 number = lexeme $ do
-  sig   <- option 1 $ (-1 <$ char8 '-')
+  sig   <- option 1 (-1 <$ char8 '-')
   int   <- decimal
   float <- option 0 frac
   pow  <- option 1 power
@@ -205,22 +215,11 @@ power = do
   pow <- decimal
   return (10^^(sgn*pow))
 
-array  = lexeme (symbol "[" *> (JSArray <$> (value `sepBy` (symbol ","))) <* symbol "]")
+array  = lexeme (symbol "[" *> (JSArray <$> (value `sepBy` symbol ",")) <* symbol "]")
 
-isControlChar ch = (0 <= ch && ch <= 31) || ch == 127
-isNotHadaka ch = ch == 34 || ch == 92
+isControlChar ch = ('\NUL' <= ch && ch <= '\US') || ch == '\DEL'
+isNotHadaka ch = ch `elem` "\"\\"
 
-w8sToStr :: [Word8] -> String
-w8sToStr = map (toEnum . fromEnum)
-
-strToW8s :: String -> [Word8]
-strToW8s = map (toEnum . fromEnum)
-
-chToW8 :: Char -> Word8
-chToW8 = toEnum . fromEnum
-
-w8ToCh :: Char -> Word8
-w8ToCh = toEnum . fromEnum
 
 jsString :: Parser JSValue
 jsString = lexeme ( string "\"" *> (JSString . concat <$> many jsChar) <* string "\"")
@@ -241,14 +240,15 @@ escapeChar = string "\""
 hex4digit :: Parser ByteString
 hex4digit = do
   string "u"
-  ((hex, _):_) <- readHex . w8sToStr <$> count 4 (satisfy $ inClass "0-9a-zA-Z")
-  return $ pack $ encode $ [toEnum hex]
+  ((hex, _):_) <- readHex <$> replicateM 4 (satisfy $ inClass "0-9a-zA-Z")
+  return $ fromString [toEnum hex]
+
 object = lexeme ( symbol "{" *> (JSObject . fromList <$> (objMember `sepBy` symbol ",")) <* symbol "}")
 
 objMember :: Parser (ByteString, JSValue)
 objMember = lexeme ((,) <$> (fromJSString <$> jsString) <*> (symbol ":" *> value))
 
-unfoldrStep :: (a -> Bool) -> (a -> Word8) -> (a -> a) -> a -> Maybe (Word8, a)
+unfoldrStep :: (a -> Bool) -> (a -> Char) -> (a -> a) -> a -> Maybe (Char, a)
 unfoldrStep p f g a | p a       = Nothing
                     | otherwise = Just (f a, g a)
 
@@ -259,7 +259,7 @@ escapeHex c | c < 0x10000 = show4Hex c
             | otherwise   = astral c
 
 show4Hex :: Int -> ByteString
-show4Hex = ("\\u" `append`) . reverse . take 4 . (`append` replicate 4 48) . unfoldr (unfoldrStep (==0) (toHexWord8 .(`mod` 16)) (`div` 16)) 
+show4Hex = ("\\u" `append`) . reverse . take 4 . (`append` "0000") . unfoldr (unfoldrStep (==0) (toHexChar .(`mod` 16)) (`div` 16)) 
 
 astral :: Int -> ByteString
 astral n = show4Hex (a + 0xd800) `append` show4Hex (b + 0xdc00)
@@ -267,6 +267,6 @@ astral n = show4Hex (a + 0xd800) `append` show4Hex (b + 0xdc00)
     a = (n `shiftR` 10) .&. 0x3ff
     b = n .&. 0x3ff
 
-toHexWord8 :: Int -> Word8
-toHexWord8 d | 0 <= d && d <= 9 = 48 + toEnum d
-             | 10 <= d          = 87 + toEnum d 
+toHexChar :: Int -> Char
+toHexChar d | 0 <= d && d <= 9 = toEnum $ 48 + d
+            | 10 <= d          = toEnum $ 87 + d 
