@@ -7,7 +7,9 @@ module Text.JSON.AttoJSON (
     -- * Parsing & Printing
     parseJSON, readJSON, showJSON,
     -- * Manipulating Objects
-    getField, getFields, updateField
+    lookup, getField, findWithDefault,
+    lookupDeep, getFields, findDeepWithDefault,
+    updateField
   ) where
 
 import Control.Applicative hiding (many)
@@ -21,7 +23,8 @@ import Data.Traversable (mapM)
 import Data.Attoparsec.Char8 ( char8, parse, string, decimal, skipSpace, satisfy
                              , inClass, sepBy, option, many, endOfInput, try, feed
                              )
-import Prelude hiding (concatMap, reverse, replicate, take, Show(..), concat, mapM)
+import Prelude hiding (concatMap, reverse, replicate, take
+                      , Show(..), concat, mapM, lookup)
 import qualified Prelude as P (Show, reverse, map)
 import Data.Foldable (foldrM)
 import Data.Bits (shiftR, (.&.))
@@ -34,6 +37,7 @@ import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
 import Data.Generics (Data(..), Typeable(..))
 import Control.Monad (replicateM)
+import Data.Maybe (fromMaybe)
 
 fromLazy = concat . L.toChunks
 
@@ -47,17 +51,35 @@ data JSValue = JSString {fromJSString :: !ByteString} -- ^ JSON String
                deriving (P.Show, Eq, Data, Typeable)
 
 -- |Get the value for field in Object and decode it.
-getField :: JSON a => ByteString -> JSValue -> Maybe a
-getField key (JSObject dic) = M.lookup key dic >>= fromJSON
-getField _ _                = Nothing
+lookup :: JSON a => ByteString -> JSValue -> Maybe a
+lookup key (JSObject dic) = M.lookup key dic >>= fromJSON
+lookup _ _                = Nothing
 
--- |Same as 'getField' but it can process nested Object. ex:
+-- |'lookup' with default value.
+findWithDefault :: JSON a => a -> ByteString -> JSValue -> a
+findWithDefault def key = fromMaybe def . getField key
+
+{-# DEPRECATED getField "Use lookup" #-}
+-- | DEPRECATED: Alias of 'lookup'. Use 'lookup'.
+getField :: JSON a => ByteString -> JSValue -> Maybe a
+getField = lookup
+
+-- |Same as 'lookup' but it can process nested Object. ex:
 -- 
 -- @
---   getFeilds [\"user\", \"name\"] (JSObject [(\"user\", JSObject [(\"name\", JSString \"hoge\")])]) == Just \"hoge\"
+--   lookupDeep [\"user\", \"name\"] (JSObject [(\"user\", JSObject [(\"name\", JSString \"hoge\")])]) == Just \"hoge\"
 -- @
+lookupDeep :: JSON a => [ByteString] -> JSValue -> Maybe a
+lookupDeep keys jso = fromJSON =<< foldrM lookup jso (P.reverse keys)
+
+-- |'getFields' with default value.
+findDeepWithDefault :: JSON a => a -> [ByteString] -> JSValue -> a
+findDeepWithDefault def keys = fromMaybe def . lookupDeep keys
+
+{-# DEPRECATED getFields "Use lookupDeep" #-}
+-- | DEPRECATED: Alias of 'lookupDeep'
 getFields :: JSON a => [ByteString] -> JSValue -> Maybe a
-getFields keys jso = fromJSON =<< foldrM getField jso (P.reverse keys)
+getFields  = lookupDeep
 
 -- | Update or Insert the value for field in Object.
 updateField :: JSON a => ByteString -> a -> JSValue -> JSValue
