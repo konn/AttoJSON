@@ -5,7 +5,7 @@ module Text.JSON.AttoJSON (
     -- * Class and Data-Types for JSON Value
     JSValue (..), JSON(..),
     -- * Parsing & Printing
-    parseJSON, readJSON, showJSON,
+    parseJSON, readJSON, showJSON, showJSON', 
     -- * Manipulating Objects
     lookup, getField, findWithDefault,
     lookupDeep, getFields, findDeepWithDefault,
@@ -195,8 +195,8 @@ readJSON = maybeResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 showJSON :: JSValue -> ByteString
 showJSON (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
   where
-    mems = elems $ mapWithKey (\k v -> showJSString k `append` ":" `append` showJSON v) dic
-showJSON (JSString jss)     = showJSString jss
+    mems = elems $ mapWithKey (\k v -> showJSString False k `append` ":" `append` showJSON v) dic
+showJSON (JSString jss)     = showJSString False jss
 showJSON (JSNumber jsn) | denominator jsn == 1 = fromLazy $ show $ numerator jsn
                         | otherwise            = fromLazy $ show (fromRational jsn :: Double)
 showJSON (JSArray jss)      = "[" `append` intercalate ", " (P.map showJSON jss) `append` "]"
@@ -204,8 +204,16 @@ showJSON (JSNull)           = "null"
 showJSON (JSBool True)      = "true"
 showJSON (JSBool False)     = "false"
 
-showJSString :: ByteString -> ByteString
-showJSString js = "\"" `append` escape js `append` "\""
+-- |Same as 'showJSON', but escape Unicode Charactors.
+showJSON' :: JSValue -> ByteString
+showJSON' (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
+  where
+    mems = elems $ mapWithKey (\k v -> showJSString True k `append` ":" `append` showJSON v) dic
+showJSON' (JSString jss) = showJSString True jss
+showJSON' jsv            = showJSON jsv
+
+showJSString :: Bool -> ByteString -> ByteString
+showJSString escapeU js = "\"" `append` escape js `append` "\""
   where
     escape :: ByteString -> ByteString
     escape = concat . P.map escapeCh . toString
@@ -218,8 +226,8 @@ showJSString js = "\"" `append` escape js `append` "\""
     escapeCh '\n' = "\\n"
     escapeCh '\r' = "\\r"
     escapeCh '\t' = "\\t"
-    escapeCh ch | mustEscape ch = escapeHex $ fromEnum ch
-                | otherwise     = fromString [ch]
+    escapeCh ch | mustEscape ch || (escapeU && ch > '\xff') = escapeHex $ fromEnum ch
+                | otherwise           = fromString [ch]
 
 jsNull = lexeme (JSNull <$ symbol "null")
 bool   = lexeme $

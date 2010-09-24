@@ -1,5 +1,5 @@
 Name:                AttoJson
-Version:             0.5.7
+Version:             0.5.8
 Synopsis:            Simple lightweight JSON parser, generator & manipulator based on ByteString
 
 Description: Simple Lightweight JSON parser & generator based on ByteString.
