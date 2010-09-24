@@ -17,26 +17,28 @@ import qualified Data.ByteString.Lazy.Char8 as L (toChunks)
 import Data.ByteString.Char8 
                        ( append, ByteString, unfoldr, take, reverse
                        , singleton, intercalate, concat
+                       , foldl'
                        )
 import Data.Attoparsec ( Parser, maybeResult, eitherResult)
 import Data.Traversable (mapM)
 import Data.Attoparsec.Char8 ( char8, parse, string, decimal, skipSpace, satisfy
                              , inClass, sepBy, option, many, endOfInput, try, feed
+                             , takeWhile1, isDigit
                              )
 import Prelude hiding (concatMap, reverse, replicate, take
                       , Show(..), concat, mapM, lookup)
 import qualified Prelude as P (Show, reverse, map)
 import Data.Foldable (foldrM)
-import Data.Bits (shiftR, (.&.))
+import Data.Bits (shiftR, shiftL, (.&.), (.|.))
 import Control.Arrow (second, (***))
 import Data.ByteString.UTF8 (fromString, toString)
 import Text.Show.ByteString (show)
-import Data.Ratio (denominator, numerator)
+import Data.Ratio (denominator, numerator, (%))
 import Numeric (readHex)
 import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
 import Data.Generics (Data(..), Typeable(..))
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, guard)
 import Data.Maybe (fromMaybe)
 
 fromLazy = concat . L.toChunks
@@ -176,7 +178,10 @@ symbol s = lexeme $ string s
 value :: Parser JSValue
 value = jsString <|> number <|> object <|> array <|> try bool <|> try jsNull
 
--- |Parse JSON source. Returns 'JSValue' ('Right') if succeed, Returns 'Left' if faild.
+-- |Parse JSON source. Returns 'JSValue' ('Right') if succeed, Returns 'Left' if failed.
+--
+--  The input string should be UTF8-encoded.  Unicode escapes (e.g. @\"\\u266B\"@) are encoded in UTF8
+--  by the parser, so incompatibilities will arise if you try to use AttoJSON with other encodings.
 parseJSON :: ByteString -> Either String JSValue
 parseJSON = eitherResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 
@@ -185,6 +190,8 @@ readJSON :: ByteString -> Maybe JSValue
 readJSON = maybeResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 
 -- |Print 'JSValue' as JSON source (not pretty).
+--
+--  The output string will be in UTF8 (provided the JSValue was constructed with UTF8 strings).
 showJSON :: JSValue -> ByteString
 showJSON (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
   where
@@ -208,12 +215,11 @@ showJSString js = "\"" `append` escape js `append` "\""
     escapeCh '"'  = "\\\""
     escapeCh '\b' = "\\b"
     escapeCh '\f' = "\\f"
-    escapeCh '/'  = "\\/"
     escapeCh '\n' = "\\n"
     escapeCh '\r' = "\\r"
     escapeCh '\t' = "\\t"
     escapeCh ch | mustEscape ch = escapeHex $ fromEnum ch
-                | otherwise     = singleton ch
+                | otherwise     = fromString [ch]
 
 jsNull = lexeme (JSNull <$ symbol "null")
 bool   = lexeme $
@@ -226,10 +232,12 @@ number = lexeme $ do
   pow  <- option 1 power
   return $ JSNumber (sig*(fromIntegral int+float)*pow)
 
+frac :: Parser Rational
 frac = do
+  let step (a,p) w = (a * 10 + fromIntegral (fromEnum w - 48), p * 10)
+      finish (a,p) = a % p
   char8 '.'
-  dgs <- fromIntegral <$> decimal
-  return (dgs / (10^^ceiling(logBase 10 (fromRational dgs))) )
+  finish . foldl' step (0,1) <$> takeWhile1 isDigit
 
 power = do
   string "E" <|> string "e"
@@ -247,7 +255,7 @@ jsString :: Parser JSValue
 jsString = lexeme ( string "\"" *> (JSString . concat <$> many jsChar) <* string "\"")
 jsChar :: Parser ByteString
 jsChar = singleton <$> satisfy (\a -> not (isControlChar a || isNotHadaka a))
-     <|> string "\\" *> (escapeChar <|> hex4digit)
+     <|> string "\\" *> (escapeChar <|> escapeUnicode)
 
 escapeChar :: Parser ByteString
 escapeChar = string "\"" 
@@ -259,11 +267,23 @@ escapeChar = string "\""
          <|> "\r" <$ char8 'r'
          <|> "\t" <$ char8 't'
 
-hex4digit :: Parser ByteString
+-- Parse either a single hex digit, or (if present) a surrogate pair.
+escapeUnicode :: Parser ByteString
+escapeUnicode = (\x -> fromString [toEnum x]) <$> do
+  uc <- hex4digit
+  if uc >= 0xd800 && uc <= 0xdbff
+    then try $ do
+           lc <- string "\\" *> hex4digit
+           guard (lc >= 0xdc00 && uc < 0xdfff)
+           return $ fromSurrogatePair (uc,lc)
+     <|> return uc
+    else return uc
+
+hex4digit :: Parser Int
 hex4digit = do
   string "u"
   ((hex, _):_) <- readHex <$> replicateM 4 (satisfy $ inClass "0-9a-zA-Z")
-  return $ fromString [toEnum hex]
+  return hex
 
 object = lexeme ( symbol "{" *> (JSObject . fromList <$> (objMember `sepBy` symbol ",")) <* symbol "}")
 
@@ -274,7 +294,7 @@ unfoldrStep :: (a -> Bool) -> (a -> Char) -> (a -> a) -> a -> Maybe (Char, a)
 unfoldrStep p f g a | p a       = Nothing
                     | otherwise = Just (f a, g a)
 
-mustEscape ch = ch < ' ' || ch == '\x7f' || ch > '\xff'
+mustEscape ch = ch < ' ' || ch == '\x7f'
 
 escapeHex :: Int -> ByteString
 escapeHex c | c < 0x10000 = show4Hex c
@@ -284,10 +304,18 @@ show4Hex :: Int -> ByteString
 show4Hex = ("\\u" `append`) . reverse . take 4 . (`append` "0000") . unfoldr (unfoldrStep (==0) (toHexChar .(`mod` 16)) (`div` 16)) 
 
 astral :: Int -> ByteString
-astral n = show4Hex (a + 0xd800) `append` show4Hex (b + 0xdc00)
-  where
-    a = (n `shiftR` 10) .&. 0x3ff
-    b = n .&. 0x3ff
+astral n = show4Hex a `append` show4Hex b
+  where (a,b) = toSurrogatePair n
+
+fromSurrogatePair :: (Int,Int) -> Int
+fromSurrogatePair (uc,lc) = 0x10000 .|. a .|. b where
+  a = (uc .&. 0x3ff) `shiftL` 10
+  b = lc .&. 0x3ff
+
+toSurrogatePair :: Int -> (Int,Int)
+toSurrogatePair n = (a + 0xd800, b + 0xdc00) where
+  a = (n `shiftR` 10) .&. 0x3ff
+  b = n .&. 0x3ff
 
 toHexChar :: Int -> Char
 toHexChar d | 0 <= d && d <= 9 = toEnum $ 48 + d
