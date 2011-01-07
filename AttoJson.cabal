@@ -1,5 +1,5 @@
 Name:                AttoJson
-Version:             0.5.8
+Version:             0.5.9
 Synopsis:            Simple lightweight JSON parser, generator & manipulator based on ByteString
 
 Description: Simple Lightweight JSON parser & generator based on ByteString.
@@ -8,7 +8,7 @@ Homepage:            http://github.com/konn/AttoJSON
 License:             BSD3
 License-file:        LICENSE
 Author:              Hiromi ISHII
-Maintainer:          mr_konn _at_ jcom.home.ne.jp
+Maintainer:          konn.jinro _at_ gmail.com
 Category:            Text
 Build-type:          Simple
 Cabal-version:       >=1.6

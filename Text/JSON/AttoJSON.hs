@@ -9,7 +9,7 @@ module Text.JSON.AttoJSON (
     -- * Manipulating Objects
     lookup, getField, findWithDefault,
     lookupDeep, getFields, findDeepWithDefault,
-    updateField
+    updateField, updateFields
   ) where
 
 import Control.Applicative hiding (many)
@@ -87,6 +87,9 @@ getFields  = lookupDeep
 updateField :: JSON a => ByteString -> a -> JSValue -> JSValue
 updateField key v (JSObject jso) = JSObject $ insert key (toJSON v) jso
 updateField _ _ j                = j
+
+updateFields :: [(ByteString, JSValue)] -> JSValue -> JSValue
+updateFields = flip (foldr (\(k,v) -> updateField k v))
 
 -- |Type Class for the value that can be converted from/into 'JSValue'.
 class JSON a where
@@ -192,25 +195,26 @@ readJSON = maybeResult . flip feed "" . parse (value <* skipSpace <* endOfInput)
 -- |Print 'JSValue' as JSON source (not pretty).
 --
 --  The output string will be in UTF8 (provided the JSValue was constructed with UTF8 strings).
+--  Only characters that have to be escaped (control characters, @\\@, and @\"@) will be escaped.
 showJSON :: JSValue -> ByteString
-showJSON (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
-  where
-    mems = elems $ mapWithKey (\k v -> showJSString False k `append` ":" `append` showJSON v) dic
-showJSON (JSString jss)     = showJSString False jss
-showJSON (JSNumber jsn) | denominator jsn == 1 = fromLazy $ show $ numerator jsn
-                        | otherwise            = fromLazy $ show (fromRational jsn :: Double)
-showJSON (JSArray jss)      = "[" `append` intercalate ", " (P.map showJSON jss) `append` "]"
-showJSON (JSNull)           = "null"
-showJSON (JSBool True)      = "true"
-showJSON (JSBool False)     = "false"
+showJSON = showJSONEsc False
 
--- |Same as 'showJSON', but escape Unicode Charactors.
+-- |Same as 'showJSON', but escape non-ASCII characters as well.
 showJSON' :: JSValue -> ByteString
-showJSON' (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
+showJSON' = showJSONEsc True
+
+showJSONEsc :: Bool -> JSValue -> ByteString
+showJSONEsc esc (JSObject dic) = "{" `append` intercalate "," mems `append` "}"
   where
-    mems = elems $ mapWithKey (\k v -> showJSString True k `append` ":" `append` showJSON v) dic
-showJSON' (JSString jss) = showJSString True jss
-showJSON' jsv            = showJSON jsv
+    mems = elems $ mapWithKey (\k v -> showJSString esc k `append` ":" `append` showJSONEsc esc v) dic
+showJSONEsc esc (JSString jss)     = showJSString esc jss
+showJSONEsc esc (JSNumber jsn) | denominator jsn == 1 = fromLazy $ show $ numerator jsn
+                               | otherwise            = fromLazy $ show (fromRational jsn :: Double)
+showJSONEsc esc (JSArray jss)      = "[" `append` intercalate ", " (P.map (showJSONEsc esc) jss) `append` "]"
+showJSONEsc esc (JSNull)           = "null"
+showJSONEsc esc (JSBool True)      = "true"
+showJSONEsc esc (JSBool False)     = "false"
+
 
 showJSString :: Bool -> ByteString -> ByteString
 showJSString escapeU js = "\"" `append` escape js `append` "\""
@@ -226,8 +230,9 @@ showJSString escapeU js = "\"" `append` escape js `append` "\""
     escapeCh '\n' = "\\n"
     escapeCh '\r' = "\\r"
     escapeCh '\t' = "\\t"
-    escapeCh ch | mustEscape ch || (escapeU && ch > '\xff') = escapeHex $ fromEnum ch
-                | otherwise           = fromString [ch]
+    escapeCh ch | mustEscape ch || (escapeU && ch > '\x7f')
+                            = escapeHex $ fromEnum ch
+                | otherwise = fromString [ch]
 
 jsNull = lexeme (JSNull <$ symbol "null")
 bool   = lexeme $
@@ -316,15 +321,24 @@ astral n = show4Hex a `append` show4Hex b
   where (a,b) = toSurrogatePair n
 
 fromSurrogatePair :: (Int,Int) -> Int
-fromSurrogatePair (uc,lc) = 0x10000 .|. a .|. b where
+fromSurrogatePair (uc,lc) = (a .|. b) + 0x10000 where
   a = (uc .&. 0x3ff) `shiftL` 10
   b = lc .&. 0x3ff
 
 toSurrogatePair :: Int -> (Int,Int)
 toSurrogatePair n = (a + 0xd800, b + 0xdc00) where
-  a = (n `shiftR` 10) .&. 0x3ff
-  b = n .&. 0x3ff
+  n' = n - 0x10000
+  a = (n' `shiftR` 10) .&. 0x3ff
+  b = n' .&. 0x3ff
+
+testSurrogatePairFuncs :: Bool
+testSurrogatePairFuncs = fromPassed && toPassed where
+    pairs  = [(uc, lc) | uc <- [0xd800..0xdbff], lc <- [0xdc00..0xdfff]]
+    values = [0x10000..0x10FFFF]
+    fromPassed = and $ zipWith (\p v -> fromSurrogatePair p == v) pairs values
+    toPassed   = and $ zipWith (\p v -> p == toSurrogatePair v)   pairs values
 
 toHexChar :: Int -> Char
 toHexChar d | 0 <= d && d <= 9 = toEnum $ 48 + d
             | 10 <= d          = toEnum $ 87 + d 
+
