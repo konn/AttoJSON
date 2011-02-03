@@ -37,7 +37,7 @@ import Data.Ratio (denominator, numerator, (%))
 import Numeric (readHex)
 import Data.Map (Map, fromList, elems, mapWithKey, toList, mapKeys, insert)
 import qualified Data.Map as M (lookup)
-import Data.Generics (Data(..), Typeable(..))
+import Data.Data (Data(..), Typeable(..))
 import Control.Monad (replicateM, guard)
 import Data.Maybe (fromMaybe)
 

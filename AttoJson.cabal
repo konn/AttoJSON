@@ -1,5 +1,5 @@
 Name:                AttoJson
-Version:             0.5.9
+Version:             0.5.10
 Synopsis:            Simple lightweight JSON parser, generator & manipulator based on ByteString
 
 Description: Simple Lightweight JSON parser & generator based on ByteString.
@@ -19,7 +19,7 @@ source-repository head
 
 Library
   Exposed-modules:     Text.JSON.AttoJSON
-  Build-depends: containers >=0.1, base >= 4 && < 5, bytestring-show >= 0.1, utf8-string >= 0.1, attoparsec >= 0.8, bytestring >= 0.9, mtl >= 1.0, syb >= 0.1
+  Build-depends: containers >=0.1, base >= 4 && < 5, bytestring-show >= 0.1, utf8-string >= 0.1, attoparsec >= 0.8, bytestring >= 0.9, mtl >= 1.0
   
   -- Modules not exported by this package.
   -- Other-modules:       
