@@ -1,7 +1,0 @@
-* Install
-> runhaskell Setup.hs configure
-> runhaskell Setup.hs build
-> runhaskell Setup.hs install
-
-* Usage
-> import Text.JSON.AttoJSON
