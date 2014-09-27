@@ -12,7 +12,7 @@ module Text.JSON.AttoJSON (
     updateField, updateFields
   ) where
 
-import Control.Applicative hiding (many)
+import Control.Applicative
 import qualified Data.ByteString.Lazy.Char8 as L (toChunks)
 import Data.ByteString.Char8 
                        ( append, ByteString, unfoldr, take, reverse
@@ -22,7 +22,7 @@ import Data.ByteString.Char8
 import Data.Attoparsec ( Parser, maybeResult, eitherResult)
 import Data.Traversable (mapM)
 import Data.Attoparsec.Char8 ( char8, parse, string, decimal, skipSpace, satisfy
-                             , inClass, sepBy, option, many, endOfInput, try, feed
+                             , inClass, sepBy, option, endOfInput, try, feed
                              , takeWhile1, isDigit
                              )
 import Prelude hiding (concatMap, reverse, replicate, take
